@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"forum/internal/cache"
 	"forum/internal/config"
 	"forum/internal/database"
 	"forum/internal/router"
@@ -35,7 +36,13 @@ func main() {
 	sqlDB, _ := db.DB()
 	defer sqlDB.Close()
 
-	engine := router.New(router.Dependencies{Config: cfg, DB: db})
+	appCache, err := cache.Open(context.Background(), cfg.Redis)
+	if err != nil {
+		exitf("redis startup failed: %v", err)
+	}
+	defer appCache.Close()
+
+	engine := router.New(router.Dependencies{Config: cfg, DB: db, Cache: appCache})
 	server := &http.Server{
 		Addr:              cfg.Server.Address,
 		Handler:           engine,

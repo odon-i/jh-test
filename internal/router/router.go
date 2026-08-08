@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"forum/internal/auth"
+	"forum/internal/cache"
 	"forum/internal/config"
 	"forum/internal/handler"
 	"forum/internal/middleware"
@@ -16,6 +17,7 @@ import (
 type Dependencies struct {
 	Config config.Config
 	DB     *gorm.DB
+	Cache  *cache.Cache
 }
 
 func New(deps Dependencies) *gin.Engine {
@@ -27,7 +29,7 @@ func New(deps Dependencies) *gin.Engine {
 	authHandler := handler.NewAuthHandler(service.NewAuthService(deps.DB, tokens), deps.Config)
 	postService := service.NewPostService(deps.DB)
 	postHandler := handler.NewPostHandler(postService)
-	socialHandler := handler.NewSocialHandler(service.NewSocialService(deps.DB))
+	socialHandler := handler.NewSocialHandler(service.NewSocialService(deps.DB, deps.Cache))
 
 	engine.GET("/healthz", func(c *gin.Context) {
 		response.OK(c, gin.H{"status": "ok"})

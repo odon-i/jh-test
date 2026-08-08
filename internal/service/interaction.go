@@ -6,17 +6,19 @@ import (
 	"net/http"
 
 	"forum/internal/apperror"
+	"forum/internal/cache"
 	"forum/internal/model"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 type SocialService struct {
-	db *gorm.DB
+	db    *gorm.DB
+	cache *cache.Cache
 }
 
-func NewSocialService(db *gorm.DB) *SocialService {
-	return &SocialService{db: db}
+func NewSocialService(db *gorm.DB, cache *cache.Cache) *SocialService {
+	return &SocialService{db: db, cache: cache}
 }
 
 type LikeResult struct {
@@ -32,9 +34,11 @@ type LikeStatus struct {
 type LikeStatusesResult struct {
 	Status []LikeStatus `json:"status"`
 }
-//点赞*取消点赞
+
+// 点赞*取消点赞
 func (s *SocialService) ToggleLike(ctx context.Context, userID, postID uint64) (LikeResult, error) {
 	liked := false
+	var likeVersion uint64
 	db := s.db.WithContext(ctx)
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var post model.Post
@@ -58,6 +62,7 @@ func (s *SocialService) ToggleLike(ctx context.Context, userID, postID uint64) (
 			}).Error; err != nil {
 				return err
 			}
+			likeVersion = post.LikeVersion + 1
 			liked = false
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			if err := tx.Create(&model.PostLike{PostID: postID, UserID: userID}).Error; err != nil {
@@ -69,6 +74,7 @@ func (s *SocialService) ToggleLike(ctx context.Context, userID, postID uint64) (
 			}).Error; err != nil {
 				return err
 			}
+			likeVersion = post.LikeVersion + 1
 			liked = true
 		default:
 			return err
@@ -78,17 +84,57 @@ func (s *SocialService) ToggleLike(ctx context.Context, userID, postID uint64) (
 	if err != nil {
 		return LikeResult{}, err
 	}
+	_ = s.cache.SetLikeState(ctx, userID, postID, likeVersion, liked)
 	return LikeResult{PostID: postID, IsLiked: liked}, nil
 }
 
 func (s *SocialService) LikeStatuses(ctx context.Context, userID uint64, postIDs []uint64) (LikeStatusesResult, error) {
-	likedIDs := make(map[uint64]struct{}, len(postIDs))
-	var likes []model.PostLike
-	if err := s.db.WithContext(ctx).Select("post_id").Where("user_id = ? AND post_id IN ?", userID, postIDs).Find(&likes).Error; err != nil {
+	type postVersion struct {
+		ID          uint64
+		LikeVersion uint64
+	}
+	var versions []postVersion
+	if err := s.db.WithContext(ctx).Model(&model.Post{}).Select("id", "like_version").Where("id IN ?", postIDs).Find(&versions).Error; err != nil {
 		return LikeStatusesResult{}, err
 	}
-	for _, like := range likes {
-		likedIDs[like.PostID] = struct{}{}
+	currentVersions := make(map[uint64]uint64, len(versions))
+	for _, version := range versions {
+		currentVersions[version.ID] = version.LikeVersion
+	}
+
+	likedIDs := make(map[uint64]struct{}, len(postIDs))
+	uncached := make([]uint64, 0, len(postIDs))
+	seenUncached := make(map[uint64]struct{}, len(postIDs))
+	for _, postID := range postIDs {
+		currentVersion, exists := currentVersions[postID]
+		if !exists {
+			continue
+		}
+		cachedVersion, liked, found, err := s.cache.GetLikeState(ctx, userID, postID)
+		if err != nil || !found || cachedVersion != currentVersion {
+			if _, duplicate := seenUncached[postID]; !duplicate {
+				uncached = append(uncached, postID)
+				seenUncached[postID] = struct{}{}
+			}
+			continue
+		}
+		if liked {
+			likedIDs[postID] = struct{}{}
+		}
+	}
+
+	if len(uncached) > 0 {
+		var likes []model.PostLike
+		if err := s.db.WithContext(ctx).Select("post_id").Where("user_id = ? AND post_id IN ?", userID, uncached).Find(&likes).Error; err != nil {
+			return LikeStatusesResult{}, err
+		}
+		for _, like := range likes {
+			likedIDs[like.PostID] = struct{}{}
+		}
+		for _, postID := range uncached {
+			_, liked := likedIDs[postID]
+			_ = s.cache.SetLikeState(ctx, userID, postID, currentVersions[postID], liked)
+		}
 	}
 
 	statuses := make([]LikeStatus, 0, len(postIDs))
@@ -98,7 +144,8 @@ func (s *SocialService) LikeStatuses(ctx context.Context, userID uint64, postIDs
 	}
 	return LikeStatusesResult{Status: statuses}, nil
 }
-//评论
+
+// 评论
 func (s *SocialService) AddComment(ctx context.Context, userID, postID uint64, content string) (CommentView, error) {
 	var result CommentView
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

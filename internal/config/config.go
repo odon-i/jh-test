@@ -13,6 +13,7 @@ type Config struct {
 	Auth     AuthConfig     `mapstructure:"auth"`
 	Database DatabaseConfig `mapstructure:"database"`
 	JWT      JWTConfig      `mapstructure:"jwt"`
+	Redis    RedisConfig    `mapstructure:"redis"`
 	Log      LogConfig      `mapstructure:"log"`
 }
 
@@ -38,6 +39,13 @@ type JWTConfig struct {
 	Secret    string        `mapstructure:"secret"`
 	Issuer    string        `mapstructure:"issuer"`
 	ExpiresIn time.Duration `mapstructure:"expires_in"`
+}
+
+type RedisConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	Address  string `mapstructure:"address"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
 }
 
 type LogConfig struct {
@@ -95,6 +103,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("jwt.secret", "change-me-in-production")
 	v.SetDefault("jwt.issuer", "forum-api")
 	v.SetDefault("jwt.expires_in", "2h")
+	v.SetDefault("redis.enabled", false)
+	v.SetDefault("redis.address", "127.0.0.1:6379")
+	v.SetDefault("redis.db", 0)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.file", "")
 }
